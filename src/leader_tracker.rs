@@ -7,7 +7,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-
+use url::Url;
+use serde_json::json;
 use cadence_macros::statsd_time;
 use dashmap::DashMap;
 use indexmap::IndexMap;
@@ -16,9 +17,10 @@ use solana_rpc_client_api::response::RpcContactInfo;
 use solana_sdk::slot_history::Slot;
 use tokio::time::sleep;
 use tracing::{debug, error, info};
-
+use websocket_tungstenite_retry::websocket_stable::{StableWebSocket, WsMessage};
 use crate::{errors::AtlasTxnSenderError, solana_rpc::SolanaRpc};
-
+use serde::Deserialize;
+use serde::Serialize;
 pub trait LeaderTracker: Send + Sync {
     /// get_leaders returns the next slot leaders in order
     fn get_leaders(&self) -> Vec<RpcContactInfo>;
@@ -26,10 +28,18 @@ pub trait LeaderTracker: Send + Sync {
 
 const NUM_LEADERS_PER_SLOT: usize = 4;
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotInfo {
+    pub slot: Slot,
+    pub parent: Slot,
+    pub root: Slot,
+}
+
 #[derive(Clone)]
 pub struct LeaderTrackerImpl {
     rpc_client: Arc<RpcClient>,
-    solana_rpc: Arc<dyn SolanaRpc>,
+    ws_url: String,
+    //solana_rpc: Arc<dyn SolanaRpc>,
     cur_slot: Arc<AtomicU64>,
     cur_leaders: Arc<DashMap<Slot, RpcContactInfo>>,
     num_leaders: usize,
@@ -39,25 +49,29 @@ pub struct LeaderTrackerImpl {
 impl LeaderTrackerImpl {
     pub fn new(
         rpc_client: Arc<RpcClient>,
-        solana_rpc: Arc<dyn SolanaRpc>,
+        //solana_rpc: Arc<dyn SolanaRpc>,
+        ws_url: String,
         num_leaders: usize,
         leader_offset: i64,
     ) -> Self {
         let leader_tracker = Self {
             rpc_client,
-            solana_rpc,
+            ws_url,
+            //solana_rpc,
             cur_slot: Arc::new(AtomicU64::new(0)),
             cur_leaders: Arc::new(DashMap::new()),
             num_leaders,
             leader_offset,
         };
-        leader_tracker.poll_slot();
+        //leader_tracker.poll_slot();
+        leader_tracker.poll_slot_by_ws();
         leader_tracker.poll_slot_leaders();
+
         leader_tracker
     }
 
     /// poll_slot polls for every new slot returned by gRPC geyser
-    fn poll_slot(&self) {
+    /*fn poll_slot(&self) {
         let solana_rpc = self.solana_rpc.clone();
         let cur_slot = self.cur_slot.clone();
         let leader_offset = self.leader_offset;
@@ -71,6 +85,51 @@ impl LeaderTrackerImpl {
                     }
                 }
             }
+        });
+    }
+    */
+
+
+    fn poll_slot_by_ws(&self) {
+
+        let ws_url = self.ws_url.clone();
+        let cur_slot = self.cur_slot.clone();
+        tokio::spawn(async move {
+            let processed_slot_subscribe = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "slotSubscribe",
+            });
+
+            println!("STARTING WS WITH: {}", ws_url);
+        
+            let mut ws1 = StableWebSocket::new_with_timeout(
+                Url::parse(&ws_url).unwrap(),
+                processed_slot_subscribe.clone(),
+                Duration::from_secs(3),
+            )
+            .await
+            .unwrap();
+        
+            let mut channel = ws1.subscribe_message_channel();
+        
+            while let Ok(msg) = channel.recv().await {
+                if let WsMessage::Text(payload) = msg {
+                    let ws_result: jsonrpsee_types::SubscriptionResponse<SlotInfo> =
+                        serde_json::from_str(&payload).unwrap();
+                    let slot_info = ws_result.params.result;
+                
+                    let slot =             slot_info.slot;
+
+                    println!("DETECTED SLOT {}", slot);
+                    
+                    if slot > cur_slot.load(Ordering::Relaxed) {
+                        cur_slot.store(slot, Ordering::Relaxed);
+                    }
+
+                }
+            }
+
         });
     }
 

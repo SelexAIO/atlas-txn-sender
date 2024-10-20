@@ -2,8 +2,6 @@ use cadence_macros::{statsd_count, statsd_gauge, statsd_time};
 use solana_client::{
     connection_cache::ConnectionCache, nonblocking::tpu_connection::TpuConnection,
 };
-use solana_program_runtime::compute_budget::{ComputeBudget, MAX_COMPUTE_UNIT_LIMIT};
-use solana_sdk::transaction::{self, VersionedTransaction};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -20,15 +18,13 @@ use crate::{
     solana_rpc::SolanaRpc,
     transaction_store::{get_signature, TransactionData, TransactionStore},
 };
-use solana_program_runtime::compute_budget::DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT;
-use solana_sdk::borsh0_10::try_from_slice_unchecked;
-use solana_sdk::compute_budget::ComputeBudgetInstruction;
+
 
 const RETRY_COUNT_BINS: [i32; 6] = [0, 1, 2, 5, 10, 25];
 const MAX_RETRIES_BINS: [i32; 5] = [0, 1, 5, 10, 30];
-const MAX_TIMEOUT_SEND_DATA: Duration = Duration::from_millis(500);
-const MAX_TIMEOUT_SEND_DATA_BATCH: Duration = Duration::from_millis(500);
-const SEND_TXN_RETRIES: usize = 10;
+const MAX_TIMEOUT_SEND_DATA: Duration = Duration::from_millis(1000);
+const MAX_TIMEOUT_SEND_DATA_BATCH: Duration = Duration::from_millis(1000);
+const SEND_TXN_RETRIES: usize = 5;
 
 #[async_trait]
 pub trait TxnSender: Send + Sync {
@@ -39,7 +35,7 @@ pub struct TxnSenderImpl {
     leader_tracker: Arc<dyn LeaderTracker>,
     transaction_store: Arc<dyn TransactionStore>,
     connection_cache: Arc<ConnectionCache>,
-    solana_rpc: Arc<dyn SolanaRpc>,
+    //solana_rpc: Arc<dyn SolanaRpc>,
     txn_sender_runtime: Arc<Runtime>,
     txn_send_retry_interval_seconds: usize,
     max_retry_queue_size: Option<usize>,
@@ -50,7 +46,7 @@ impl TxnSenderImpl {
         leader_tracker: Arc<dyn LeaderTracker>,
         transaction_store: Arc<dyn TransactionStore>,
         connection_cache: Arc<ConnectionCache>,
-        solana_rpc: Arc<dyn SolanaRpc>,
+        //solana_rpc: Arc<dyn SolanaRpc>,
         txn_sender_threads: usize,
         txn_send_retry_interval_seconds: usize,
         max_retry_queue_size: Option<usize>,
@@ -64,7 +60,7 @@ impl TxnSenderImpl {
             leader_tracker,
             transaction_store,
             connection_cache,
-            solana_rpc,
+            //solana_rpc,
             txn_sender_runtime: Arc::new(txn_sender_runtime),
             txn_send_retry_interval_seconds,
             max_retry_queue_size,
@@ -110,9 +106,14 @@ impl TxnSenderImpl {
                     }
                 }
 
+
+
                 let mut wire_transactions = vec![];
                 for mut transaction_data in transaction_map.iter_mut() {
                     wire_transactions.push(transaction_data.wire_transaction.clone());
+                    if transaction_data.max_retries > 5 {
+                        transaction_data.max_retries = 5;
+                    }
                     if transaction_data.retry_count >= transaction_data.max_retries {
                         transactions_reached_max_retries
                             .push(get_signature(&transaction_data).unwrap());
@@ -174,7 +175,7 @@ impl TxnSenderImpl {
         });
     }
 
-    fn track_transaction(&self, transaction_data: &TransactionData) {
+    /*fn track_transaction(&self, transaction_data: &TransactionData) {
         let sent_at = transaction_data.sent_at.clone();
         let signature = get_signature(transaction_data);
         if signature.is_none() {
@@ -189,7 +190,7 @@ impl TxnSenderImpl {
             priority,
         } = compute_priority_details(&transaction_data.versioned_transaction);
         let priority_fees_enabled = (fee > 0).to_string();
-        let solana_rpc = self.solana_rpc.clone();
+        //let solana_rpc = self.solana_rpc.clone();
         let transaction_store = self.transaction_store.clone();
         let api_key = transaction_data
             .request_metadata
@@ -227,59 +228,14 @@ impl TxnSenderImpl {
             statsd_time!("transaction_compute_limit", cu_limit as u64, "landed" => &landed);
         });
     }
+    */
 }
 
-pub struct PriorityDetails {
-    pub fee: u64,
-    pub cu_limit: u32,
-    pub priority: u64,
-}
-
-pub fn compute_priority_details(transaction: &VersionedTransaction) -> PriorityDetails {
-    let mut cu_limit = DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT;
-    let mut compute_budget = ComputeBudget::new(DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT as u64);
-    if let Err(e) = transaction.sanitize() {
-        return PriorityDetails {
-            fee: 0,
-            priority: 0,
-            cu_limit,
-        };
-    }
-    let instructions = transaction.message.instructions().iter().map(|ix| {
-        match try_from_slice_unchecked(&ix.data) {
-            Ok(ComputeBudgetInstruction::SetComputeUnitLimit(compute_unit_limit)) => {
-                cu_limit = compute_unit_limit.min(MAX_COMPUTE_UNIT_LIMIT);
-            }
-            _ => {}
-        }
-        (
-            transaction
-                .message
-                .static_account_keys()
-                .get(usize::from(ix.program_id_index))
-                .expect("program id index is sanitized"),
-            ix,
-        )
-    });
-    let compute_budget = compute_budget.process_instructions(instructions, true, true);
-    match compute_budget {
-        Ok(compute_budget) => PriorityDetails {
-            fee: compute_budget.get_fee(),
-            priority: compute_budget.get_priority(),
-            cu_limit,
-        },
-        Err(e) => PriorityDetails {
-            fee: 0,
-            priority: 0,
-            cu_limit,
-        },
-    }
-}
 
 #[async_trait]
 impl TxnSender for TxnSenderImpl {
     fn send_transaction(&self, transaction_data: TransactionData) {
-        self.track_transaction(&transaction_data);
+        //self.track_transaction(&transaction_data);
         let api_key = transaction_data
             .request_metadata
             .map(|m| m.api_key)
