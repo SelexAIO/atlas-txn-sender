@@ -121,7 +121,7 @@ impl LeaderTrackerImpl {
                 
                     let slot =             slot_info.slot;
 
-                    println!("DETECTED SLOT {}", slot);
+                    //println!("DETECTED SLOT {}", slot);
                     
                     if slot > cur_slot.load(Ordering::Relaxed) {
                         cur_slot.store(slot, Ordering::Relaxed);
